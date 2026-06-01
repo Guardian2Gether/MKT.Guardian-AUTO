@@ -1,145 +1,134 @@
-#!/usr/bin/env python3
-# MKT Guardian AI - Fábrica de Mídia v3.0 (Correção Total)
-import os, json, requests
-from dotenv import load_dotenv
+import os
+import json
+import requests
 from google import genai
 from google.genai import types
-from elevenlabs import ElevenLabs
-from moviepy.editor import ImageClip, AudioFileClip
-from PIL import Image, ImageDraw, ImageFont
 
-# Configuração
-DIR_BASE = os.path.dirname(os.path.abspath(__file__))
-ENV_PATH = os.path.join(DIR_BASE, '.env')
-if not os.path.exists(ENV_PATH):
-    print("ERRO: .env não encontrado!"); exit(1)
-
-load_dotenv(ENV_PATH)
-GEMINI_KEY = os.getenv("GEMINI_API_KEY")
-ELEVEN_KEY = os.getenv("ELEVEN_LABS_API_KEY")
-VOICE_ID = os.getenv("ELEVEN_LABS_VOICE_ID", "Josh")
-MAX_VIDEOS = int(os.getenv("MAX_VIDEOS_DIARIOS", "20"))
-PASTA_SAIDA = os.getenv("PASTA_SAIDA", "output_videos")
-
-if not GEMINI_KEY or not ELEVEN_KEY:
-    print("ERRO: Chaves faltando no .env"); exit(1)
-
-client_gemini = genai.Client(api_key=GEMINI_KEY)
-client_eleven = ElevenLabs(api_key=ELEVEN_KEY)
-
-DIR_OUT = os.path.join(DIR_BASE, PASTA_SAIDA)
-for s in ["", "imagens", "audios", "videos"]:
-    os.makedirs(os.path.join(DIR_OUT, s), exist_ok=True)
-
-def get_roteiro(tema):
-    print(f"   🧠 Roteiro: {tema}...")
-    try:
-        # Prompt rigoroso para evitar repetição de instruções
-        prompt = f"""Atue como um roteirista de vídeos virais.
-        Tema: {tema}
-        Retorne APENAS um JSON válido com:
-        1. "script": Uma frase impactante de 15 segundos pronta para narração. Não inclua instruções como 'narre aqui'. Apenas a fala.
-        2. "img_prompt": Um prompt em INGLÊS descrevendo uma cena realista, cinematográfica, 8k, altamente detalhada sobre o tema. Sem palavras abstratas, descreva objetos e luz."""
+class MediaFactory:
+    def __init__(self):
+        # Inicializa o cliente do Gemini
+        self.client = genai.Client()
+        self.model_name = "gemini-2.5-flash"
         
-        resp = client_gemini.models.generate_content(model="gemini-2.5-flash", contents=prompt)
-        txt = resp.text.replace("```json", "").replace("```", "").strip()
-        return json.loads(txt)
-    except Exception as e:
-        print(f"   ⚠️ Erro Roteiro: {e}")
-        return {"script": f"Cuidado com {tema}. Proteja seu patrimônio agora.", "img_prompt": "cybersecurity shield glowing realistic 8k"}
+        # Carrega a API Key do ElevenLabs da variável de ambiente
+        self.elevenlabs_key = os.environ.get("ELEVENLABS_API_KEY")
+        # ID de voz padrão (pode ser alterado para a voz clonada da sua agência)
+        self.voice_id = "21m00Tcm4TlvDq8ikWAM" 
 
-def get_imagem(prompt, vid_id):
-    print(f"   🎨 Gerando Imagem Realista (Gemini 2.5 Flash Image)...")
-    path_final = os.path.join(DIR_OUT, "imagens", f"{vid_id}.png")
-    
-    # Reforço no prompt para realismo
-    prompt_reforcado = f"{prompt}, photorealistic, cinematic lighting, 8k, highly detailed, sharp focus, no text, no cartoon"
-    
-    try:
-        resp = client_gemini.models.generate_content(
-            model="gemini-2.5-flash-image",
-            contents=[prompt_reforcado],
-            config=types.GenerateContentConfig(response_modalities=["IMAGE"])
+    def generate_campaign_assets(self, creative_data: dict):
+        """
+        Recebe a inteligência do Criativo e gera os arquivos físicos de áudio e imagem.
+        """
+        print("\n🏭 [Fábrica de Mídia] Iniciando produção automatizada de Assets...")
+        
+        # Cria a pasta de output se não existir para organizar os arquivos
+        os.makedirs("output_campanha", exist_ok=True)
+        
+        # 1. Extrai os textos gerados pelo nó Criativo anterior
+        texto_audio = f"{creative_data['gancho_atencao_inicial']}. {creative_data['desenvolvimento_copy']}"
+        texto_cta = creative_data['chamada_para_acao_cta']
+        
+        print(f"🎙️ Texto enviado para locução: '{texto_audio[:50]}...'")
+        
+        # 2. Executa Geração do Áudio (ElevenLabs)
+        audio_path = self._generate_audio(texto_audio)
+        
+        # 3. Executa Geração do Prompt de Imagem (Gemini lê o contexto e cria o prompt visual)
+        print("🎨 Solicitando ao Gemini o conceito visual ideal para o anúncio...")
+        image_prompt = self._create_image_prompt(texto_audio, texto_cta)
+        
+        # 4. Executa Geração da Imagem (Gemini 2.5 Imagen)
+        image_path = self._generate_image(image_prompt)
+        
+        return {
+            "audio_file": audio_path,
+            "image_file": image_path,
+            "applied_prompt": image_prompt
+        }
+
+    def _generate_audio(self, text: str) -> str:
+        """Conecta com a API do ElevenLabs para gerar a locução em formato MP3."""
+        if not self.elevenlabs_key:
+            print("⚠️ ElevenLabs API Key não configurada. Pulando geração de áudio real (Modo Simulação).")
+            return "output_campanha/anuncio_audio_mock.mp3"
+            
+        url = f"https://api.elevenlabs.io/v1/text-to-speech/{self.voice_id}"
+        headers = {
+            "Accept": "audio/mpeg",
+            "Content-Type": "application/json",
+            "xi-api-key": self.elevenlabs_key
+        }
+        data = {
+            "text": text,
+            "model_id": "eleven_multilingual_v2",
+            "voice_settings": {"stability": 0.5, "similarity_boost": 0.75}
+        }
+        
+        try:
+            response = requests.post(url, json=data, headers=headers)
+            if response.status_code == 200:
+                file_path = "output_campanha/anuncio_audio.mp3"
+                with open(file_path, "wb") as f:
+                    f.write(response.content)
+                print(f"✅ Locução gerada com sucesso e salva em: {file_path}")
+                return file_path
+            else:
+                print(f"❌ Erro na API do ElevenLabs: {response.text}")
+                return ""
+        except Exception as e:
+            print(f"❌ Falha ao conectar no ElevenLabs: {e}")
+            return ""
+
+    def _create_image_prompt(self, copy_text: str, cta_text: str) -> str:
+        """Usa o Gemini para criar um prompt descritivo altamente detalhado para geração de imagem."""
+        sop_designer = ""
+        if os.path.exists("03_designer_visual.md"):
+            with open("03_designer_visual.md", "r", encoding="utf-8") as f:
+                sop_designer = f.read()
+
+        instruction = (
+            f"{sop_designer}\n\n"
+            "Com base no SOP de Designer Visual acima e no texto do anúncio fornecido, "
+            "escreva um prompt em INGLÊS altamente descritivo e focado em conversão para alimentar uma IA geradora de imagens (Imagen 3). "
+            "Traga apenas o prompt final limpo, sem textos adicionais."
         )
-        for part in resp.parts:
-            # CORREÇÃO AQUI: Verificação completa do atributo
-            if hasattr(part, 'inline_data') and part.inline_data is not None:
-                img = part.as_image()
-                img.save(path_final)
-                print("   ✅ Imagem realista gerada!")
-                return path_final
-        print("   ⚠️ Nenhuma imagem na resposta.")
-    except Exception as e:
-        print(f"   ⚠️ Falha IA ({e}), criando fallback...")
-
-    # Fallback
-    img = Image.new('RGB', (1080, 1920), color=(10, 15, 30))
-    d = ImageDraw.Draw(img)
-    font = ImageFont.load_default()
-    d.text((50, 200), f"Falha na IA. Tema: {tema}", fill=(255,255,255), font=font)
-    img.save(path_final)
-    return path_final
-
-def get_audio(texto, vid_id):
-    print(f"   🎙️ Narração Neural (Velocidade Normal)...")
-    path_mp3 = os.path.join(DIR_OUT, "audios", f"{vid_id}.mp3")
-    try:
-        # Ajuste de estabilidade para naturalidade
-        stream = client_eleven.text_to_speech.convert(
-            text=texto, 
-            voice_id=VOICE_ID, 
-            model_id="eleven_multilingual_v2",
-            voice_settings={"stability": 0.5, "similarity_boost": 0.75}
-        )
-        with open(path_mp3, "wb") as f:
-            for chunk in stream:
-                f.write(chunk)
-        return path_mp3
-    except Exception as e:
-        print(f"   ❌ Erro Áudio: {e}")
-        return None
-
-def montar_video(audio_path, img_path, vid_id):
-    print(f"   🎬 Renderizando...")
-    final_path = os.path.join(DIR_OUT, "videos", f"{vid_id}.mp4")
-    try:
-        audio = AudioFileClip(audio_path)
-        clip = ImageClip(img_path).set_duration(audio.duration)
-        clip = clip.set_audio(audio)
-        clip = clip.set_fps(24)
         
-        clip.write_videofile(final_path, codec='libx264', audio_codec='aac', preset='ultrafast', logger=None)
-        print(f"   ✅ SUCESSO: {vid_id}.mp4")
-        return True
-    except Exception as e:
-        print(f"   ❌ Erro Render: {e}")
-        return False
+        try:
+            response = self.client.models.generate_content(
+                model=self.model_name,
+                contents=f"{instruction}\n\nTexto do anúncio: {copy_text} - CTA: {cta_text}"
+            )
+            return response.text.strip()
+        except Exception as e:
+            print(f"❌ Erro ao estruturar prompt de imagem: {e}")
+            return "A professional smartphone cybersecurity app protection interface, high tech, modern."
 
-def main():
-    temas = [
-        "Golpe do PIX Fantasma",
-        "Segurança Digital para Empresas",
-        "Como investir seguro em 2025",
-        "Proteja seus dados bancários",
-        "Senhas fortes salvam vidas"
-    ]
-    
-    print("\n🏭 FÁBRICA MKT GUARDIAN v3.0\n")
-    count = 0
-    for i, tema in enumerate(temas):
-        if count >= MAX_VIDEOS: break
-        vid_id = f"video_{i+1}"
-        print(f"[{i+1}] {tema}")
+    def _generate_image(self, prompt: str) -> str:
+        """Gera a imagem comercial utilizando o motor Imagen do ecossistema Gemini SDK."""
+        print(f"🖼️ Enviando prompt ao Imagen: '{prompt[:60]}...'")
+        file_path = "output_campanha/anuncio_visual.jpg"
         
-        dados = get_roteiro(tema)
-        img_path = get_imagem(dados.get("img_prompt", ""), vid_id)
-        aud_path = get_audio(dados.get("script", ""), vid_id)
-        
-        if img_path and aud_path:
-            if montar_video(aud_path, img_path, vid_id): count += 1
-        print("-" * 40)
-    
-    print(f"\n🎉 Finalizado! {count} vídeos em: {os.path.join(DIR_OUT, 'videos')}")
-
-if __name__ == "__main__":
-    main()
+        try:
+            # Chama o modelo de geração de imagens oficial da SDK atualizada do Gemini
+            result = self.client.models.generate_images(
+                model="imagen-3.0-generate-002",
+                prompt=prompt,
+                config=types.GenerateImagesConfig(
+                    number_of_images=1,
+                    output_mime_type="image/jpeg",
+                    aspect_ratio="1:1" # Padrão Feed do Instagram/Facebook
+                )
+            )
+            
+            for generated_image in result.generated_images:
+                with open(file_path, "wb") as f:
+                    f.write(generated_image.image.image_bytes)
+            
+            print(f"✅ Arte do anúncio gerada com sucesso e salva em: {file_path}")
+            return file_path
+        except Exception as e:
+            print(f"⚠️ Erro ao gerar imagem via API Imagen: {e}. Criando arquivo simulado.")
+            # Fallback seguro para não travar a esteira de automação caso a cota da API falhe
+            with open(file_path, "w") as f:
+                f.write("Fábrica de Mídia - Imagem Simulada")
+            return file_path
